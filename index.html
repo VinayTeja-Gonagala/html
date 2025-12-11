@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Interactive Cubic Bézier — Spring Rope</title>
+  <style>
+    html,body{height:100%;margin:0;background:#0f1724;color:#e6eef8;font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial}
+    #ui {position:fixed;left:12px;top:12px;z-index:3;background:rgba(255,255,255,0.04);padding:10px;border-radius:8px;font-size:13px}
+    canvas{display:block;width:100%;height:100%}
+    a{color:#9bd0ff}
+    .hint{opacity:0.85}
+    .rules{font-size:12px;line-height:1.25;margin-top:8px;max-width:360px}
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <div style="font-weight:700">Interactive Cubic Bézier — Spring Rope</div>
+    
+    <div style="margin-top:6px;font-size:12px;opacity:0.9">Controls: Move mouse or drag control points • <span id="fps">FPS</span></div>
+  </div>
+  <canvas id="c"></canvas>
+
+  <script>
+    (()=>{
+      const canvas = document.getElementById('c');
+      const ctx = canvas.getContext('2d');
+      let DPR = Math.max(1, window.devicePixelRatio || 1);
+      function resize(){
+        DPR = Math.max(1, window.devicePixelRatio || 1);
+        canvas.width = Math.floor(window.innerWidth * DPR);
+        canvas.height = Math.floor(window.innerHeight * DPR);
+        canvas.style.width = window.innerWidth + 'px';
+        canvas.style.height = window.innerHeight + 'px';
+        ctx.setTransform(DPR,0,0,DPR,0,0);
+      }
+      window.addEventListener('resize', resize);
+      resize();
+      function v(x=0,y=0){return {x:+x,y:+y};}
+      function add(a,b){return {x:a.x+b.x,y:a.y+b.y};}
+      function sub(a,b){return {x:a.x-b.x,y:a.y-b.y};}
+      function mul(a,s){return {x:a.x*s,y:a.y*s};}
+      function len(a){return Math.hypot(a.x,a.y);} 
+      function norm(a){const L=len(a)||1; return {x:a.x/L,y:a.y/L};}
+      const margin = 80;
+      function makeEndpoints(){
+        return {
+          P0: v(margin, innerHeight*0.5),
+          P3: v(innerWidth - margin, innerHeight*0.5)
+        };
+      }
+      let {P0,P3} = makeEndpoints();
+      window.addEventListener('resize', ()=>{ const e = makeEndpoints(); P0=e.P0; P3=e.P3; });
+      function ControlPoint(x,y){
+        this.rest = v(x,y);
+        this.pos = v(x,y);
+        this.vel = v(0,0);
+        this.target = v(x,y);
+      }
+      const centerY = innerHeight*0.5;
+      let P1s = new ControlPoint(innerWidth*0.33, centerY - 80);
+      let P2s = new ControlPoint(innerWidth*0.66, centerY + 80);
+      const SPRING_K = 40.0;
+      const DAMPING = 8.0;
+      const MASS = 1.0;
+      let mouse = {x: innerWidth*0.5, y: centerY, active:false};
+      let dragging = null;
+      function updateTargetsFromInput(){
+        const cx = innerWidth*0.5, cy = innerHeight*0.5;
+        const ox = (mouse.x - cx) / cx;
+        const oy = (mouse.y - cy) / cy;
+        const scale = Math.min(innerWidth, innerHeight) * 0.28;
+        P1s.target = add(P1s.rest, mul(v(ox, oy), scale * 0.9));
+        P2s.target = add(P2s.rest, mul(v(ox, oy), scale * 1.1));
+      }
+      function getXY(e){
+        if(e.touches && e.touches[0]) return {x: e.touches[0].clientX, y: e.touches[0].clientY};
+        return {x: e.clientX, y: e.clientY};
+      }
+      canvas.addEventListener('mousedown', (e)=>{
+        const p = getXY(e);
+        mouse.x = p.x; mouse.y = p.y; mouse.active = true;
+        const d1 = Math.hypot(p.x - P1s.pos.x, p.y - P1s.pos.y);
+        const d2 = Math.hypot(p.x - P2s.pos.x, p.y - P2s.pos.y);
+        if(d1 < 18) dragging = 'p1';
+        else if(d2 < 18) dragging = 'p2';
+      });
+      window.addEventListener('mousemove', (e)=>{
+        const p = getXY(e); mouse.x = p.x; mouse.y = p.y;
+        if(dragging === 'p1') { P1s.pos.x = mouse.x; P1s.pos.y = mouse.y; P1s.vel = v(0,0); }
+        if(dragging === 'p2') { P2s.pos.x = mouse.x; P2s.pos.y = mouse.y; P2s.vel = v(0,0); }
+      });
+      window.addEventListener('mouseup', ()=>{ mouse.active=false; dragging=null; });
+      canvas.addEventListener('touchstart', (e)=>{ const p=getXY(e); mouse.x=p.x; mouse.y=p.y; mouse.active=true; e.preventDefault();});
+      canvas.addEventListener('touchmove', (e)=>{ const p=getXY(e); mouse.x=p.x; mouse.y=p.y; e.preventDefault();});
+      canvas.addEventListener('touchend', (e)=>{ mouse.active=false; e.preventDefault();});
+      function bezierPoint(t,P0,P1,P2,P3){
+        const u = 1 - t;
+        const u3 = u*u*u;
+        const u2t = 3*u*u*t;
+        const ut2 = 3*u*t*t;
+        const t3 = t*t*t;
+        return {
+          x: u3*P0.x + u2t*P1.x + ut2*P2.x + t3*P3.x,
+          y: u3*P0.y + u2t*P1.y + ut2*P2.y + t3*P3.y
+        };
+      }
+      function bezierTangent(t,P0,P1,P2,P3){
+        const u = 1 - t;
+        const a = mul(sub(P1,P0), 3*u*u);
+        const b = mul(sub(P2,P1), 6*u*t);
+        const c = mul(sub(P3,P2), 3*t*t);
+        return add(add(a,b),c);
+      }
+      let last = performance.now();
+      let fpsCounter = {lastTick: performance.now(), frames:0, fps:0};
+      function step(now){
+        const dtMs = Math.min(40, now - last);
+        const dt = dtMs / 1000;
+        last = now;
+        if(!dragging) updateTargetsFromInput();
+        [P1s, P2s].forEach(cp=>{
+          const spring = mul(sub(cp.pos, cp.target), -SPRING_K);
+          const damp = mul(cp.vel, -DAMPING);
+          const acc = mul(add(spring, damp), 1.0 / MASS);
+          cp.vel.x += acc.x * dt; cp.vel.y += acc.y * dt;
+          cp.pos.x += cp.vel.x * dt; cp.pos.y += cp.vel.y * dt;
+        });
+        render();
+        fpsCounter.frames++;
+        if(now - fpsCounter.lastTick >= 500){ fpsCounter.fps = Math.round((fpsCounter.frames*1000)/(now-fpsCounter.lastTick)); fpsCounter.lastTick = now; fpsCounter.frames=0; document.getElementById('fps').textContent = fpsCounter.fps + ' FPS'; }
+        requestAnimationFrame(step);
+      }
+      function render(){
+        ctx.clearRect(0,0,innerWidth,innerHeight);
+        const G = 40;
+        ctx.save(); ctx.globalAlpha=0.04; ctx.lineWidth=1;
+        ctx.strokeStyle='#ffffff';
+        for(let x=0;x<innerWidth; x+=G){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,innerHeight); ctx.stroke(); }
+        for(let y=0;y<innerHeight; y+=G){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(innerWidth,y); ctx.stroke(); }
+        ctx.restore();
+        ctx.beginPath(); ctx.moveTo(P0.x,P0.y); ctx.lineTo(P1s.pos.x,P1s.pos.y); ctx.lineTo(P2s.pos.x,P2s.pos.y); ctx.lineTo(P3.x,P3.y);
+        ctx.strokeStyle = 'rgba(155,200,255,0.25)'; ctx.lineWidth=1.5; ctx.stroke();
+        ctx.beginPath();
+        const stepT = 0.01;
+        let first = true;
+        for(let t=0;t<=1+1e-9;t+=stepT){
+          const p = bezierPoint(t, P0, P1s.pos, P2s.pos, P3);
+          if(first){ ctx.moveTo(p.x,p.y); first=false; } else ctx.lineTo(p.x,p.y);
+        }
+        ctx.lineWidth = 3.5; ctx.strokeStyle = 'rgba(80,200,255,0.95)'; ctx.stroke();
+        ctx.lineWidth = 1.6;
+        const tanStep = 0.08;
+        for(let t=0;t<=1+1e-9;t+=tanStep){
+          const p = bezierPoint(t, P0, P1s.pos, P2s.pos, P3);
+          let tg = bezierTangent(t, P0, P1s.pos, P2s.pos, P3);
+          const L = len(tg) || 1;
+          const tch = 28;
+          tg = mul(norm(tg), tch);
+          ctx.beginPath(); ctx.moveTo(p.x - tg.x*0.5, p.y - tg.y*0.5); ctx.lineTo(p.x + tg.x*0.5, p.y + tg.y*0.5);
+          ctx.strokeStyle = 'rgba(255,255,255,0.65)'; ctx.stroke();
+        }
+        function drawCP(cp, color){
+          ctx.beginPath(); ctx.arc(cp.pos.x, cp.pos.y, 8, 0, Math.PI*2); ctx.fillStyle = color; ctx.fill();
+          ctx.beginPath(); ctx.arc(cp.rest.x, cp.rest.y, 3, 0, Math.PI*2); ctx.fillStyle='rgba(255,255,255,0.6)'; ctx.fill();
+        }
+        drawCP(P1s, 'rgba(255,120,120,0.95)');
+        drawCP(P2s, 'rgba(120,255,160,0.95)');
+        ctx.beginPath(); ctx.arc(P0.x, P0.y, 6,0,Math.PI*2); ctx.fillStyle='rgba(255,255,255,0.95)'; ctx.fill();
+        ctx.beginPath(); ctx.arc(P3.x, P3.y, 6,0,Math.PI*2); ctx.fillStyle='rgba(255,255,255,0.95)'; ctx.fill();
+      }
+      last = performance.now();
+      requestAnimationFrame(step);
+      window._bezierSim = {P1s,P2s, P0,P3, setSpring: (k,d)=>{ console.log('set',k,d); }};
+    })();
+  </script>
+</body>
+</html>
